@@ -1,1 +1,1 @@
-console.log("This is Sparta");
+console.log("Hello Git from VScode");
