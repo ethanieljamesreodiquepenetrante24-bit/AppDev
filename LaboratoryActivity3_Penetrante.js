@@ -1,8 +1,5 @@
-// LaboratoryActivity3_<YourLastName>.js
-// Replace <YourLastName> with your actual last name
-
 // Step 1: Set your base number (last digit of student ID)
-let baseNumber = 7; // Example: if your ID ends with 7
+let baseNumber = 9;
 
 // ===============================
 // Problem 1: Grade Calculator
