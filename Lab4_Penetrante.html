@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Lab4 - Product Inventory IS</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Arial;padding:18px;background:#f6f8fb}
+    header{display:flex;align-items:center;justify-content:space-between}
+    .controls{margin:12px 0}
+    input,select,button{padding:8px;margin:4px}
+    table{width:100%;border-collapse:collapse;margin-top:12px}
+    th,td{border:1px solid #ddd;padding:8px;text-align:left}
+    .card{border-radius:8px;padding:12px;margin:8px;border:1px solid #ddd;background:#fff}
+    .cards{display:flex;flex-wrap:wrap;gap:12px}
+    .red{color:#a00}
+    .btn{cursor:pointer}
+    #summary{margin-top:12px;padding:10px;background:#fff;border-radius:8px}
+    .hidden{display:none}
+    .controls-row{display:flex;gap:6px;flex-wrap:wrap}
+  </style>
+</head>
+<body>
+  <header>
+    <h2>Product Inventory IS (Item Reservations System)</h2>
+    <div>
+      <label>View: <select id="viewToggle"><option value="table">Table</option><option value="card">Card</option></select></label>
+    </div>
+  </header>
+
+  <section class="controls">
+    <!-- Form: at least 3 inputs -->
+    <form id="addForm">
+      <!-- name, stock, price are required -->
+      <div class="controls-row">
+        <input id="name" placeholder="Item name (unique)" required />
+        <input id="stock" type="number" placeholder="Stock (integer)" required min="0" />
+        <input id="price" type="number" step="0.01" placeholder="Price (PHP)" required min="0" />
+        <button class="btn" id="addBtn">Add</button>
+      </div>
+    </form>
+
+    <div class="controls-row">
+      <input id="liveSearch" placeholder="Live search (partial keywords)" />
+      <button class="btn" id="filterBtn">Filter: Low stock (&le; 2)</button>
+      <button class="btn" id="sortNameBtn">Sort by Name</button>
+      <button class="btn" id="sortPriceBtn">Sort by Price</button>
+      <button class="btn" id="resetBtn">Reset</button>
+    </div>
+  </section>
+
+  <!-- Container to display records -->
+  <div id="list"></div>
+
+  <!-- Summary -->
+  <div id="summary"></div>
+
+  <!-- Template for Delete/Update via prompt -->
+
+  <script>
+  /**
+   * Product Inventory IS
+   * - Demonstrates arrays and objects (domain model) + DOM interactions
+   * - Student learning goals (comments explain each part):
+   *   * How items are stored in JS arrays as records
+   *   * How object methods (cart, item) enforce business rules
+   *   * How events update the UI and the array (Add / Filter / Sort / Delete / Search)
+   */
+
+  // -------------------- Domain model (Objects) --------------------
+
+  // Item constructor -- represents inventory item
+  function Item(name, stock, price) {
+    this.name = name;
+    this.stock = Number(stock);
+    this.price = Number(price);
+  }
+
+  Item.prototype.toReadable = function(){
+    return `${this.name} — ₱${this.price.toFixed(2)} (stock: ${this.stock})`;
+  };
+
+  // Cart object with behavior. Methods return human-readable reports.
+  function Cart(){
+    this.items = []; // {name, qty, priceAtAdd}
+  }
+
+  // add(itemObj, qty) rejects if qty exceeds stock
+  Cart.prototype.add = function(itemObj, qty){
+    qty = Number(qty);
+    if(qty <= 0) return {ok:false, msg:'Quantity must be > 0'};
+    if(qty > itemObj.stock) return {ok:false, msg:`Only ${itemObj.stock} left in stock for ${itemObj.name}`};
+
+    // reduce stock on success
+    itemObj.stock -= qty;
+    this.items.push({name:itemObj.name, qty:qty, priceAtAdd:itemObj.price});
+    return {ok:true, msg:`Added ${qty} x ${itemObj.name} to cart`};
+  };
+
+  // checkout returns total with tax (12%) and applies discount if > ₱5000
+  Cart.prototype.checkout = function(){
+    if(this.items.length === 0) return 'Cart is empty.';
+    let subtotal = 0;
+    this.items.forEach(i => subtotal += i.qty * i.priceAtAdd);
+    const tax = subtotal * 0.12;
+    let total = subtotal + tax;
+    let discount = 0;
+    if(subtotal > 5000) { discount = total * 0.05; total = total - discount; }
+    // human-readable report
+    return `Receipt:\nItems: ${this.items.map(x=>`${x.qty}×${x.name}`).join(', ')}\nSubtotal: ₱${subtotal.toFixed(2)}\nTax (12%): ₱${tax.toFixed(2)}\nDiscount: ₱${discount.toFixed(2)}\nTotal: ₱${total.toFixed(2)}`;
+  };
+
+  // -------------------- Data store (array of records) --------------------
+  // Initialize empty array then preload at least 5 records (requirement allows user to add 5, but I provided examples)
+  let inventory = [];
+
+  // helper: add sample items (console logged)
+  function seedData(){
+    inventory.push(new Item('Mango', 10, 120.00));
+    inventory.push(new Item('Math Handbook', 3, 450.50));
+    inventory.push(new Item('USB Cable', 0, 150.00));
+    inventory.push(new Item('Monitor 24"', 2, 5500.00));
+    inventory.push(new Item('Desk Lamp', 5, 780.99));
+    console.log('Seeded data:', inventory);
+  }
+
+  seedData();
+
+  // -------------------- Utility functions --------------------
+
+  // custom search function: accepts partial keywords (case-insensitive, matches anywhere)
+  function partialSearch(keyword, arr){
+    keyword = String(keyword).trim().toLowerCase();
+    if(!keyword) return arr.slice();
+    return arr.filter(it => it.name.toLowerCase().includes(keyword));
+  }
+
+  // find index by unique field (name). returns -1 if not found
+  function findIndexByName(name){
+    return inventory.findIndex(it => it.name.toLowerCase() === name.toLowerCase());
+  }
+
+  // render functions (table view & card view)
+  let currentView = 'table';
+  let sortState = {by:null, asc:true};
+  let lastFilter = null;
+
+  function renderList(arr){
+    const container = document.getElementById('list');
+    container.innerHTML = '';
+
+    if(currentView === 'table'){
+      const tbl = document.createElement('table');
+      tbl.innerHTML = `<thead><tr><th>Item</th><th>Price (₱)</th><th>Stock</th><th>Actions</th></tr></thead>`;
+      const tbody = document.createElement('tbody');
+      arr.forEach(it => {
+        const tr = document.createElement('tr');
+        const nameCell = document.createElement('td');
+        nameCell.textContent = it.name;
+        if(it.stock === 0) nameCell.classList.add('red'); // highlight zero stock
+
+        const priceCell = document.createElement('td');
+        priceCell.textContent = it.price.toFixed(2);
+
+        const stockCell = document.createElement('td');
+        stockCell.textContent = it.stock;
+        if(it.stock === 0) stockCell.classList.add('red');
+        if(it.stock <= 2 && it.stock > 0) stockCell.classList.add('red'); // low stock highlighted
+
+        const actions = document.createElement('td');
+        // Update, Delete, Add to Cart buttons
+        const upd = document.createElement('button'); upd.textContent='Update'; upd.onclick = ()=>updateRecord(it.name);
+        const del = document.createElement('button'); del.textContent='Delete'; del.onclick = ()=>deleteRecord(it.name);
+        const cartBtn = document.createElement('button'); cartBtn.textContent='Add to Cart'; cartBtn.onclick = ()=>promptAddToCart(it.name);
+        actions.append(upd, del, cartBtn);
+
+        tr.append(nameCell, priceCell, stockCell, actions);
+        tbody.appendChild(tr);
+      });
+      tbl.appendChild(tbody);
+      container.appendChild(tbl);
+    } else {
+      const cards = document.createElement('div'); cards.className='cards';
+      arr.forEach(it => {
+        const c = document.createElement('div'); c.className='card';
+        const title = document.createElement('div'); title.textContent = it.name; if(it.stock===0) title.classList.add('red');
+        const p = document.createElement('div'); p.textContent = `Price: ₱${it.price.toFixed(2)}`;
+        const s = document.createElement('div'); s.textContent = `Stock: ${it.stock}`; if(it.stock<=2) s.classList.add('red');
+        const btns = document.createElement('div');
+        const upd = document.createElement('button'); upd.textContent='Update'; upd.onclick = ()=>updateRecord(it.name);
+        const del = document.createElement('button'); del.textContent='Delete'; del.onclick = ()=>deleteRecord(it.name);
+        const cartBtn = document.createElement('button'); cartBtn.textContent='Add to Cart'; cartBtn.onclick = ()=>promptAddToCart(it.name);
+        btns.append(upd, del, cartBtn);
+        c.append(title,p,s,btns);
+        cards.appendChild(c);
+      });
+      container.appendChild(cards);
+    }
+
+    renderSummary(arr);
+  }
+
+  function renderSummary(arr){
+    const s = document.getElementById('summary');
+    const totalItems = arr.length;
+    const totalStock = arr.reduce((a,b)=>a+b.stock,0);
+    const totalValue = arr.reduce((a,b)=>a+(b.stock*b.price),0);
+    s.innerHTML = `<strong>Summary</strong><br>Records: ${totalItems} | Total stock: ${totalStock} | Total inventory value: ₱${totalValue.toFixed(2)}`;
+  }
+
+  // -------------------- CRUD operations --------------------
+
+  // Add record (via form) - with validation
+  function addRecord(name, stock, price){
+    if(!name) return alert('Name required');
+    if(isNaN(stock) || isNaN(price)) return alert('Stock and price must be numbers');
+    if(findIndexByName(name) !== -1) return alert('Item with that name already exists. Use Update instead.');
+
+    const it = new Item(name, stock, price);
+    inventory.push(it);
+    console.log('Add:', it);
+    reRender();
+  }
+
+  // Update a record by searching unique field (name) - we will prompt user for new values
+  function updateRecord(name){
+    const idx = findIndexByName(name);
+    if(idx === -1) return alert('Item not found');
+    const it = inventory[idx];
+    const newName = prompt('New name (leave blank to keep)', it.name) || it.name;
+    const newStock = prompt('New stock (integer)', it.stock);
+    const newPrice = prompt('New price', it.price);
+    // basic validation
+    if(isNaN(Number(newStock)) || isNaN(Number(newPrice))) return alert('Invalid stock or price');
+    it.name = newName;
+    it.stock = Number(newStock);
+    it.price = Number(newPrice);
+    console.log('Updated:', it);
+    reRender();
+  }
+
+  // Delete record with confirmation
+  function deleteRecord(name){
+    if(!confirm(`Delete ${name}? This cannot be undone.`)) return;
+    const idx = findIndexByName(name);
+    if(idx === -1) return alert('Item not found');
+    const removed = inventory.splice(idx,1)[0];
+    console.log('Deleted:', removed);
+    reRender();
+  }
+
+  // Filter records by meaningful rule (items below stock threshold)
+  function filterLowStock(threshold=2){
+    lastFilter = inventory.filter(it => it.stock <= threshold);
+    console.log(`Filter: stock <= ${threshold}`, lastFilter);
+    renderList(lastFilter);
+  }
+
+  // Sort records by numeric and string field
+  function sortBy(field){
+    if(sortState.by === field) sortState.asc = !sortState.asc; else { sortState.by = field; sortState.asc = true; }
+    const dir = sortState.asc ? 1 : -1;
+    inventory.sort((a,b)=>{
+      if(field === 'name') return a.name.localeCompare(b.name) * dir;
+      if(field === 'price') return (a.price - b.price) * dir;
+      return 0;
+    });
+    console.log(`Sorted by ${field} ${sortState.asc? 'ASC':'DESC'}`);
+    reRender();
+  }
+
+  // Reset view / filters / sort
+  function resetAll(){
+    sortState = {by:null, asc:true}; lastFilter = null;
+    // we won't restore original insertion order; for demo this is fine. Re-render full list
+    reRender();
+  }
+
+  // live search handler
+  function handleLiveSearch(q){
+    const results = partialSearch(q, inventory);
+    console.log('Live search', q, results);
+    renderList(results);
+  }
+
+  // prompt add to cart flow
+  const demoCart = new Cart();
+  function promptAddToCart(itemName){
+    const idx = findIndexByName(itemName);
+    if(idx === -1) return alert('Item not found');
+    const it = inventory[idx];
+    const qty = prompt(`Quantity to add to cart (available ${it.stock}):`, 1);
+    const res = demoCart.add(it, Number(qty));
+    if(!res.ok) return alert(res.msg);
+    console.log(res.msg);
+    alert(res.msg + '\n\nCart receipt preview:\n' + demoCart.checkout());
+    reRender();
+  }
+
+  // -------------------- Helper to re-render depending on current view and filters --------------------
+  function reRender(){
+    const q = document.getElementById('liveSearch').value.trim();
+    if(q) return handleLiveSearch(q);
+    if(lastFilter) return renderList(lastFilter);
+    renderList(inventory);
+  }
+
+  // -------------------- Event wiring --------------------
+  document.getElementById('addForm').addEventListener('submit', (e)=>{
+    e.preventDefault();
+    const name = document.getElementById('name').value.trim();
+    const stock = Number(document.getElementById('stock').value);
+    const price = Number(document.getElementById('price').value);
+    addRecord(name, stock, price);
+    // clear inputs
+    e.target.reset();
+  });
+
+  document.getElementById('filterBtn').addEventListener('click', ()=>filterLowStock(2));
+  document.getElementById('sortNameBtn').addEventListener('click', ()=>sortBy('name'));
+  document.getElementById('sortPriceBtn').addEventListener('click', ()=>sortBy('price'));
+  document.getElementById('resetBtn').addEventListener('click', ()=>{ document.getElementById('liveSearch').value=''; lastFilter=null; resetAll(); });
+  document.getElementById('viewToggle').addEventListener('change', (e)=>{ currentView = e.target.value; reRender(); });
+
+  document.getElementById('liveSearch').addEventListener('input', (e)=>{
+    handleLiveSearch(e.target.value);
+  });
+
+  // initial render
+  reRender();
+
+  // -------------------- Console demonstration helpers --------------------
+  console.log('Inventory system ready. Available functions (try in console):');
+  console.log('inventory  // the array of Item objects');
+  console.log('addRecord(name,stock,price) // add new item');
+  console.log('updateRecord(name) // interactive update via prompts');
+  console.log('deleteRecord(name) // delete with confirm');
+  console.log('partialSearch(keyword, inventory) // search function (returns array)');
+  console.log('filterLowStock(threshold) // filter by stock');
+  console.log('sortBy(field) // field: "name" or "price"');
+  console.log('demoCart // Cart instance - use demoCart.add(itemObj, qty) and demoCart.checkout()');
+
+  </script>
+</body>
+</html>
